@@ -4,10 +4,10 @@ RoomFlow is a local meeting-room planner for a small office. The dashboard shows
 
 ## Run on Windows
 
-Install Python 3.13 and Node.js 24 with npm. Dependency installation requires internet access on a fresh machine. Use two PowerShell terminals. Run the following in the first terminal.
+Install Python 3.13 and Node.js 24 with npm. Dependency installation requires internet access on a fresh machine. Open two PowerShell terminals with the cloned RoomFlow repository as the current directory. Run the following in the first terminal.
 
 ```powershell
-Set-Location 'C:\Users\chenl\Documents\SelfLearning\AI-Projects\RoomFlow\backend'
+Set-Location .\backend
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
@@ -16,7 +16,7 @@ python -m venv .venv
 Run the following in the second terminal.
 
 ```powershell
-Set-Location 'C:\Users\chenl\Documents\SelfLearning\AI-Projects\RoomFlow\frontend'
+Set-Location .\frontend
 npm.cmd ci
 npm.cmd run dev -- --host 127.0.0.1 --port 5173 --strictPort
 ```
