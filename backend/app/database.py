@@ -60,12 +60,22 @@ class SeedRecord(Base):
     name: Mapped[str] = mapped_column(primary_key=True)
 
 
-def make_engine(path: Path):
-    engine = create_engine(URL.create("sqlite", database=str(path)),
-                           connect_args={"check_same_thread": False, "timeout": 8})
+def make_engine(path: Path | None = None, database_url: str | None = None):
+        if database_url:
+            engine = create_engine(
+                database_url,
+                pool_pre_ping=True,
+                pool_recycle=300,  
+            )
+            return engine
 
-    @event.listens_for(engine, "connect")
-    def configure_connection(connection, _record):
-        connection.execute("PRAGMA foreign_keys=ON")
+        engine = create_engine(
+            URL.create("sqlite", database=str(path)),
+            connect_args={"check_same_thread": False, "timeout": 8},
+        )
 
-    return engine
+        @event.listens_for(engine, "connect")
+        def configure_connection(connection, _record):
+            connection.execute("PRAGMA foreign_keys=ON")
+
+        return engine

@@ -10,7 +10,7 @@ from fastapi import Depends, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy import select, text
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException
 
@@ -39,7 +39,8 @@ Db = Annotated[Session, Depends(session)]
 
 
 def begin_write(db: Session):
-    db.execute(text("BEGIN IMMEDIATE"))
+        if db.bind and db.bind.dialect.name == "sqlite":
+            db.execute(text("BEGIN IMMEDIATE"))
 
 
 def get_record(db, model, resource_id):
@@ -64,7 +65,11 @@ def check_booking(db, room_id, start, end, now, current=None):
         raise ApiError(422, "invalid_duration", "Reserve between 15 minutes and four hours.")
     if start < now:
         raise ApiError(422, "past_start", "Choose a start time in the future.")
-    get_record(db, Room, room_id)
+    room_query = select(Room).where(Room.id == room_id)
+    if db.bind and db.bind.dialect.name != "sqlite":
+        room_query = room_query.with_for_update()
+    if db.scalar(room_query) is None:
+        raise ApiError(404, "not_found", "Room was not found.")
     query = select(Booking.id).where(Booking.room_id == room_id, Booking.status == "active", *overlap(start, end))
     if current is not None:
         query = query.where(Booking.id != current)
@@ -73,17 +78,20 @@ def check_booking(db, room_id, start, end, now, current=None):
 
 
 def create_app(path: Path | None = None, *, seed: bool = True, clock: Callable[[], datetime] = lambda: datetime.now(UTC)):
+    database_url = None if path is not None else os.environ.get("ROOMFLOW_DATABASE_URL")
     default_path = Path(__file__).resolve().parents[1] / "data" / "roomflow.sqlite3"
     database_path = Path(path or os.environ.get("ROOMFLOW_DB_PATH", default_path))
-    engine = make_engine(database_path)
+    engine = make_engine(path=database_path, database_url=database_url)
 
     @asynccontextmanager
     async def lifespan(_app):
-        database_path.parent.mkdir(parents=True, exist_ok=True)
+        if database_url is None:
+            database_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             with Session(engine) as db:
-                begin_write(db)
-                Base.metadata.create_all(db.connection())
+                if database_url is None:
+                    begin_write(db)
+                    Base.metadata.create_all(db.connection())
                 if seed:
                     seed_demo(db, clock())
                 db.commit()
@@ -107,6 +115,16 @@ def create_app(path: Path | None = None, *, seed: bool = True, clock: Callable[[
     @app.exception_handler(HTTPException)
     async def http_error(_, exc):
         return failure(exc.status_code, "http_error", str(exc.detail), exc.headers)
+
+    @app.exception_handler(IntegrityError)
+    async def integrity_error(_, exc):
+        if getattr(exc.orig, "sqlstate", None) == "23P01":
+            return failure(
+                409,
+                "booking_conflict",
+                "This room is already booked during that time. Choose another room or time.",
+            )
+        return failure(500, "database_error", "The database could not complete this request.")
 
     @app.exception_handler(OperationalError)
     async def database_error(_, exc):
