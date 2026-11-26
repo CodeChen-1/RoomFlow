@@ -27,7 +27,8 @@ Open [RoomFlow](http://127.0.0.1:5173). Interactive API documentation is availab
 
 | Directory | Responsibility |
 | --- | --- |
-| `backend/app/` | FastAPI endpoints, Pydantic validation, SQLAlchemy models, SQLite storage and demo data |
+| `backend/app/` | FastAPI endpoints, Pydantic validation, SQLAlchemy models, SQLite/PostgreSQL storage and demo data |
+| `backend/alembic/` | Alembic schema migrations and PostgreSQL exclusion constraint |
 | `backend/tests/` | Pytest checks against isolated databases |
 | `frontend/src/` | React, TypeScript and Tailwind interface, native fetch client and local-time display |
 | `frontend/tests/` | Vitest and React Testing Library interaction tests |
@@ -37,9 +38,15 @@ Vite forwards requests under `/api` to the local backend. Set `ROOMFLOW_API_URL`
 
 ## Database and reservation rules
 
-On first startup the backend creates `backend/data/roomflow.sqlite3`. It inserts six rooms and six example meetings on the server's local today and tomorrow. A seed-history record protects those examples from being reinserted on restart. Restarts preserve reservations and cancellations. To use a separate database, set `$env:ROOMFLOW_DB_PATH` to an absolute path before starting the backend. Keep the database on a local disk.
+On first startup with the default SQLite configuration, the backend creates `backend/data/roomflow.sqlite3`. It inserts six rooms and six example meetings on the server's local today and tomorrow. A seed-history record protects those examples from being reinserted on restart. Restarts preserve reservations and cancellations. To use a separate SQLite file, set `$env:ROOMFLOW_DB_PATH` to an absolute path before starting the backend. Keep the SQLite database on a local disk.
 
-Every create, edit and cancellation acquires SQLite's write lock with `BEGIN IMMEDIATE` before reading reservation state. The conflict check and write share one transaction. A competing writer waits for the first commit and then checks the committed interval. SQLite lock contention exceeding the eight-second timeout returns HTTP 503 and a retry hint.
+To use PostgreSQL (such as Neon) instead of SQLite, set `$env:ROOMFLOW_DATABASE_URL` (for example `postgresql+psycopg://...`) and apply the versioned schema migrations before starting the backend:
+
+```powershell
+.\.venv\Scripts\alembic.exe upgrade head
+```
+
+On SQLite, every create, edit and cancellation acquires a write lock with `BEGIN IMMEDIATE` before reading reservation state so the conflict check and write share one transaction; lock contention exceeding the eight-second timeout returns HTTP 503 and a retry hint. On PostgreSQL, booking checks lock the target room row with `SELECT ... FOR UPDATE`, and the `no_overlapping_active_bookings` `EXCLUDE USING gist` constraint (`btree_gist` + `tsrange`) enforces non-overlapping active slots at the storage layer (mapping `23P01` violations to HTTP 409).
 
 Reservations require a room, meeting title, organiser and UTC start and end. A new booking must start in the future and last between 15 minutes and four hours inclusive. Two active bookings in the same room conflict when `new_start < existing_end && new_end > existing_start`. Consecutive meetings may share an endpoint. Rescheduling applies the same rule, excluding the original reservation. Cancellation preserves history and releases the slot.
 
@@ -78,4 +85,4 @@ Playwright starts both servers on ports 8781 and 5179 with a temporary database.
 
 ## Scope
 
-RoomFlow is designed for trusted local users. Anyone with access to the application can manage its reservations. SQLite serialises writes, which suits a small office. This version includes no sign-in, recurring meetings, external calendar integration, hosting configuration or database upgrade migrations.
+RoomFlow is designed for trusted local users. Anyone with access to the application can manage its reservations. SQLite serialises writes by default for a small office, while PostgreSQL uses row-level locking and an exclusion constraint. This version includes no sign-in, recurring meetings, external calendar integration or hosting configuration.
