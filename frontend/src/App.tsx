@@ -8,8 +8,10 @@ import {
   Globe2,
   LayoutDashboard,
   Plus,
+  Shield,
   X,
 } from 'lucide-react'
+import { AdminPanel } from './AdminPanel'
 import { BookingDialog } from './BookingDialog'
 import type { DialogState } from './BookingDialog'
 import { Dashboard, Directory, Schedule } from './Screens'
@@ -28,6 +30,7 @@ const pages = [
   { name: 'Dashboard' as const, icon: LayoutDashboard },
   { name: 'Rooms' as const, icon: DoorOpen },
   { name: 'Reservations' as const, icon: CalendarDays },
+  { name: 'Admin' as const, icon: Shield },
 ]
 
 function currentPage(): Screen {
@@ -95,7 +98,7 @@ export default function App() {
     const options = { signal: controller.signal }
     Promise.all([
       request<Room[]>('rooms' + (roomQuery ? '?' + roomQuery : ''), options),
-      screen === 'Rooms'
+      screen === 'Rooms' || screen === 'Admin'
         ? Promise.resolve([] as Booking[])
         : request<Booking[]>(
             'bookings?' + rangeQuery(dayStart, dayEnd),
@@ -207,15 +210,19 @@ export default function App() {
                   ? 'Workspace overview'
                   : screen === 'Rooms'
                     ? 'Room directory'
-                    : 'Reservations'}
+                    : screen === 'Admin'
+                      ? 'Room management'
+                      : 'Reservations'}
               </h1>
               <p className="subtle">
                 {screen === 'Rooms'
                   ? 'Find a room for your next meeting.'
-                  : displayDate + ' · ' + timezone}
+                  : screen === 'Admin'
+                    ? 'Add, edit, or remove workspace rooms.'
+                    : displayDate + ' · ' + timezone}
               </p>
             </div>
-            {screen !== 'Rooms' && (
+            {screen !== 'Rooms' && screen !== 'Admin' && (
               <input
                 className="date-field"
                 aria-label="Selected date"
@@ -285,6 +292,15 @@ export default function App() {
               date={date}
               open={details}
               pending={!current}
+            />
+          )}
+          {screen === 'Admin' && (
+            <AdminPanel
+              rooms={rooms}
+              onChanged={(message) => {
+                setNotice(message)
+                setRevision((r) => r + 1)
+              }}
             />
           )}
         </div>

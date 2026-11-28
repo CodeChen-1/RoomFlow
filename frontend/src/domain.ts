@@ -23,7 +23,7 @@ export type BookingInput = Pick<
   Booking,
   'room_id' | 'title' | 'organiser' | 'start_at' | 'end_at'
 >
-export type Screen = 'Dashboard' | 'Rooms' | 'Reservations'
+export type Screen = 'Dashboard' | 'Rooms' | 'Reservations' | 'Admin'
 export type Slot = { start: string; end: string }
 
 export const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
@@ -135,6 +135,7 @@ export async function request<T>(
           : 'RoomFlow could not complete that request. Please try again.'),
     )
   }
+  if (response.status === 204) return undefined as T
   return response.json()
 }
 
