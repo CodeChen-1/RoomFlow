@@ -1,6 +1,8 @@
 # RoomFlow — Smart Room Booking System
 
-RoomFlow is a local meeting-room planner for a small office. The dashboard shows utilisation, the room directory helps you find a space for a time range, and Reservations lets you edit, move or cancel meetings. The application runs on your computer without a service account or API key.
+**Live Demo:** [https://room-flow-rho.vercel.app](https://room-flow-rho.vercel.app)
+
+RoomFlow is a meeting-room planner for a small office, deployable on Vercel + Neon PostgreSQL or runnable locally on SQLite. The dashboard shows utilisation, the room directory helps you find a space for a time range, Reservations lets you edit, move or cancel meetings, and the Admin tab provides password-protected room management.
 
 ## Run on Windows
 
@@ -33,6 +35,9 @@ Open [RoomFlow](http://127.0.0.1:5173). Interactive API documentation is availab
 | `frontend/src/` | React, TypeScript and Tailwind interface, native fetch client and local-time display |
 | `frontend/tests/` | Vitest and React Testing Library interaction tests |
 | `frontend/e2e/` | Playwright checks using both servers |
+| `api/index.py` | Vercel Python serverless entrypoint exposing the FastAPI app |
+| `vercel.json` | Vercel build, static output, and `/api/*` rewrite configuration |
+| `requirements.txt` | Root Python dependencies for Vercel serverless deployment |
 
 Vite forwards requests under `/api` to the local backend. Set `ROOMFLOW_API_URL` before starting Vite to use a different backend address. The browser sends UTC instants for the beginning and end of the selected local day. A reservation crossing midnight appears on both days. The dashboard counts only the time between each day's boundaries. An active booking from 23:30 to 00:30 contributes half a room-hour to each day.
 
@@ -61,8 +66,29 @@ Reservations require a room, meeting title, organiser and UTC start and end. A n
 | GET | `/api/bookings/{id}` | One reservation |
 | PATCH | `/api/bookings/{id}` | Edit details or reschedule |
 | POST | `/api/bookings/{id}/cancel` | Mark the reservation cancelled |
+| GET | `/api/admin/me` | Check whether admin mode is configured and signed in |
+| POST | `/api/admin/login` | Sign in with the admin password and set an `HttpOnly` cookie |
+| POST | `/api/admin/logout` | Clear the admin session cookie |
+| POST | `/api/rooms` | Create a room (admin required, HTTP 201) |
+| PATCH | `/api/rooms/{id}` | Edit room details (admin required) |
+| DELETE | `/api/rooms/{id}` | Delete a room with no existing reservations (admin required, HTTP 204) |
 
 For creation, send a JSON object with `room_id`, `title`, `organiser`, `start_at` and `end_at`. Use ISO 8601 timestamps such as `2030-06-10T02:00:00Z`. An error response has the shape `{"error":{"code":"…","message":"…"}}`. Input errors return HTTP 422, missing resources 404, and booking conflicts 409.
+
+## Deployment (Vercel + Neon)
+
+RoomFlow is configured for all-in-one deployment on Vercel with a Neon PostgreSQL database:
+
+1. Apply Alembic migrations once against your Neon database:
+   ```powershell
+   $env:ROOMFLOW_DATABASE_URL = 'postgresql+psycopg://<user>:<password>@<host>/<db>?sslmode=require'
+   .\.venv\Scripts\alembic.exe upgrade head
+   ```
+2. Import the repository in Vercel with the **Root Directory** left at the repo root (`./`).
+3. Set the following environment variables in **Vercel → Settings → Environment Variables**:
+   - `ROOMFLOW_DATABASE_URL`: Neon connection string starting with `postgresql+psycopg://...` (required)
+   - `ROOMFLOW_ADMIN_PASSWORD`: Password required to unlock the `#admin` room management tab (optional; admin mode is disabled if unset)
+   - `ROOMFLOW_ADMIN_SECRET`: Optional explicit HMAC signing secret for admin session cookies
 
 ## Verification
 
@@ -85,4 +111,4 @@ Playwright starts both servers on ports 8781 and 5179 with a temporary database.
 
 ## Scope
 
-RoomFlow is designed for trusted local users. Anyone with access to the application can manage its reservations. SQLite serialises writes by default for a small office, while PostgreSQL uses row-level locking and an exclusion constraint. This version includes no sign-in, recurring meetings, external calendar integration or hosting configuration.
+Reservations are open for quick workspace and demo use: anyone with access to the application can view, create, edit, or cancel reservations. Room creation, editing, and deletion in the Admin tab are protected by an HMAC-signed `HttpOnly` cookie backed by `ROOMFLOW_ADMIN_PASSWORD`. SQLite serialises writes by default for local runs, while PostgreSQL uses row-level locking and an exclusion constraint. Recurring meetings and external calendar integration are out of scope for this version.
