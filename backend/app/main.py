@@ -1,12 +1,16 @@
 import os
 import sqlite3
+import hashlib
+import hmac
+import secrets
+import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, Query, Request
+from fastapi import Depends, FastAPI, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy import select, text
@@ -15,8 +19,11 @@ from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException
 
 from .database import Base, Booking, Room, make_engine
-from .schemas import BookingCreate, BookingPatch, BookingView, RoomView, Status, UtcTime
+from .schemas import AdminLogin, RoomCreate, RoomPatch, BookingCreate, BookingPatch, BookingView, RoomView, Status, UtcTime
 from .seed import seed_demo
+
+ADMIN_COOKIE = "roomflow_admin"
+ADMIN_TTL_SECONDS = 60 * 60 * 8
 
 
 class ApiError(Exception):
@@ -25,6 +32,36 @@ class ApiError(Exception):
         self.code = code
         self.message = message
 
+
+def admin_secret() -> str | None:
+        pw = os.environ.get("ROOMFLOW_ADMIN_PASSWORD")
+        if not pw:
+            return None
+        return os.environ.get("ROOMFLOW_ADMIN_SECRET") or hashlib.sha256(f"roomflow:{pw}".encode()).hexdigest()
+
+
+def make_admin_token(secret: str) -> str:
+    exp = str(int(time.time()) + ADMIN_TTL_SECONDS)
+    sig = hmac.new(secret.encode(), exp.encode(), hashlib.sha256).hexdigest()
+    return f"{exp}.{sig}"
+
+
+def is_valid_admin_token(token: str | None, secret: str | None) -> bool:
+    if not token or not secret or "." not in token:
+        return False
+    exp, sig = token.split(".", 1)
+    if not exp.isdigit() or int(exp) < time.time():
+        return False
+    expected = hmac.new(secret.encode(), exp.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(sig, expected)
+
+
+def require_admin(request: Request):
+    secret = admin_secret()
+    if not secret:
+        raise ApiError(503, "admin_disabled", "Admin mode is not configured on this server.")
+    if not is_valid_admin_token(request.cookies.get(ADMIN_COOKIE), secret):
+        raise ApiError(401, "unauthorized", "Admin sign-in required.")
 
 def failure(status, code, message, headers=None):
     return JSONResponse({"error": {"code": code, "message": message}}, status_code=status, headers=headers)
@@ -219,7 +256,70 @@ def create_app(path: Path | None = None, *, seed: bool = True, clock: Callable[[
         db.commit()
         return booking
 
-    return app
+    @app.get("/api/admin/me")
+    def admin_status(request: Request):
+        secret = admin_secret()
+        return {
+            "configured": secret is not None,
+            "authenticated": is_valid_admin_token(request.cookies.get(ADMIN_COOKIE), secret),
+        }
 
+    @app.post("/api/admin/login")
+    def admin_login(data: AdminLogin, request: Request, response: Response):
+        expected = os.environ.get("ROOMFLOW_ADMIN_PASSWORD")
+        secret = admin_secret()
+        if not expected or not secret:
+            raise ApiError(503, "admin_disabled", "Admin mode is not configured on this server.")
+        if not secrets.compare_digest(data.password, expected):
+            raise ApiError(401, "invalid_credentials", "Incorrect admin password.")
+        response.set_cookie(
+            key=ADMIN_COOKIE,
+            value=make_admin_token(secret),
+            httponly=True,
+            samesite="lax",
+            secure=request.url.scheme == "https",
+            max_age=ADMIN_TTL_SECONDS,
+        )
+        return {"authenticated": True}
+
+    @app.post("/api/admin/logout")
+    def admin_logout(response: Response):
+        response.delete_cookie(ADMIN_COOKIE)
+        return {"authenticated": False}
+
+    @app.post("/api/rooms", response_model=RoomView, status_code=201, dependencies=[Depends(require_admin)])
+    def create_room(data: RoomCreate, db: Db):
+        begin_write(db)
+        if db.scalar(select(Room.id).where(Room.name == data.name)) is not None:
+            raise ApiError(409, "duplicate_room", "A room with this name already exists.")
+        room = Room(**data.model_dump())
+        db.add(room)
+        db.commit()
+        return room
+
+    @app.patch("/api/rooms/{room_id}", response_model=RoomView, dependencies=[Depends(require_admin)])
+    def update_room(room_id: int, data: RoomPatch, db: Db):
+        begin_write(db)
+        room = get_record(db, Room, room_id)
+        changes = data.model_dump(exclude_unset=True)
+        if "name" in changes and changes["name"] != room.name:
+            if db.scalar(select(Room.id).where(Room.name == changes["name"])) is not None:
+                raise ApiError(409, "duplicate_room", "A room with this name already exists.")
+        for field, value in changes.items():
+            setattr(room, field, value)
+        db.commit()
+        return room
+
+    @app.delete("/api/rooms/{room_id}", status_code=204, dependencies=[Depends(require_admin)])
+    def delete_room(room_id: int, db: Db):
+        begin_write(db)
+        room = get_record(db, Room, room_id)
+        has_bookings = db.scalar(select(Booking.id).where(Booking.room_id == room_id).limit(1)) is not None
+        if has_bookings:
+            raise ApiError(409, "room_in_use", "Rooms with existing reservations cannot be deleted.")
+        db.delete(room)
+        db.commit()
+
+    return app
 
 app = create_app()
